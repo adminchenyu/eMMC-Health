@@ -1,0 +1,40 @@
+#!/bin/sh
+
+LOG_FILE="/tmp/luci-app-emmc-health-opkg.log"
+LOCK_FILE="/var/lock/opkg.lock"
+WAIT_COUNT=30
+
+echo "[luci-app-emmc-health] helper started"
+
+if command -v mmc >/dev/null 2>&1; then
+	echo "[luci-app-emmc-health] mmc already installed"
+	exit 0
+fi
+
+while [ -e "$LOCK_FILE" ] && [ "$WAIT_COUNT" -gt 0 ]; do
+	echo "[luci-app-emmc-health] waiting for opkg lock: $WAIT_COUNT"
+	WAIT_COUNT=$((WAIT_COUNT - 1))
+	sleep 2
+done
+
+echo "[luci-app-emmc-health] running opkg update"
+opkg update
+
+echo "[luci-app-emmc-health] running opkg install mmc-utils"
+opkg install mmc-utils
+
+if command -v mmc >/dev/null 2>&1; then
+	echo "[luci-app-emmc-health] mmc-utils installed successfully"
+else
+	echo "[luci-app-emmc-health] mmc-utils install did not provide mmc"
+fi
+
+if [ -x /etc/init.d/rpcd ]; then
+	/etc/init.d/rpcd reload 2>/dev/null || /etc/init.d/rpcd restart 2>/dev/null || true
+fi
+
+if [ -x /etc/init.d/uhttpd ]; then
+	/etc/init.d/uhttpd reload 2>/dev/null || /etc/init.d/uhttpd restart 2>/dev/null || true
+fi
+
+echo "[luci-app-emmc-health] helper finished"

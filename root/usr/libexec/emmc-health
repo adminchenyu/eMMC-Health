@@ -1,0 +1,576 @@
+#!/bin/sh
+
+# LuCI helper for reading eMMC health data.
+# It does not accept user supplied shell commands and only scans whole
+# /dev/mmcblkN devices, excluding partitions and special boot/rpmb areas.
+
+json_escape() {
+	# mmc-utils output may contain tabs or other control characters. Literal
+	# control characters are illegal inside JSON strings, so normalize them
+	# before escaping quotes, backslashes and newlines.
+	tr '\000-\011\013\014\016-\037' ' ' |
+	sed \
+		-e 's/\\/\\\\/g' \
+		-e 's/"/\\"/g' \
+		-e ':a;N;$!ba;s/\r//g;s/\n/\\n/g'
+}
+
+json_string() {
+	printf '%s' "$1" | json_escape
+}
+
+error_json() {
+	local code="$1"
+	local message="$2"
+	printf '{'
+	printf '"ok":false,'
+	printf '"error":"%s",' "$(json_string "$code")"
+	printf '"message":"%s"' "$(json_string "$message")"
+	printf '}\n'
+	exit 0
+}
+
+output_json() {
+	local device="$1"
+	local ext_csd_rev="$2"
+	local mmc_version="$3"
+	local life_a_raw="$4"
+	local life_b_raw="$5"
+	local pre_eol_raw="$6"
+	local raw_output="$7"
+	local manufacturer="$8"
+	local model="$9"
+	local mid="${10}"
+	local capacity="${11}"
+	local used="${12}"
+	local usable="${13}"
+
+	[ -n "$ext_csd_rev" ] || ext_csd_rev="未知"
+	[ -n "$mmc_version" ] || mmc_version="未知"
+	[ -n "$life_a_raw" ] || life_a_raw="未知"
+	[ -n "$life_b_raw" ] || life_b_raw="未知"
+	[ -n "$pre_eol_raw" ] || pre_eol_raw="未知"
+	[ -n "$manufacturer" ] || manufacturer="未知"
+	[ -n "$model" ] || model="未知"
+	[ -n "$mid" ] || mid="未知"
+	[ -n "$capacity" ] || capacity="未知"
+	[ -n "$used" ] || used="未知"
+
+	[ -n "$usable" ] || usable="$capacity"
+
+	local life_a_score
+	local life_b_score
+	local pre_status
+	local health_level
+	local suggestion
+
+	life_a_score="$(life_score "$life_a_raw")"
+	life_b_score="$(life_score "$life_b_raw")"
+	pre_status="$(pre_eol_status "$pre_eol_raw")"
+
+	health_level="正常"
+	suggestion="当前 eMMC 状态正常，建议保持定期备份。"
+
+	if [ "$pre_status" = "危险" ] || [ "$life_a_score" -ge 10 ] || [ "$life_b_score" -ge 10 ]; then
+		health_level="危险"
+		suggestion="建议立即备份配置和重要数据，并准备更换存储设备。"
+	elif [ "$pre_status" = "警告" ] || [ "$life_a_score" -ge 8 ] || [ "$life_b_score" -ge 8 ]; then
+		health_level="警告"
+		suggestion="建议备份配置，检查日志、下载、Docker 等高频写入任务。"
+	elif [ "$life_a_score" -ge 6 ] || [ "$life_b_score" -ge 6 ]; then
+		health_level="注意"
+		suggestion="建议备份配置，减少 Docker、下载、日志等高频写入。"
+	fi
+
+	printf '{'
+	printf '"ok":true,'
+	printf '"device":"%s",' "$(json_string "$device")"
+	printf '"manufacturer":"%s",' "$(json_string "$manufacturer")"
+	printf '"model":"%s",' "$(json_string "$model")"
+	printf '"mid":"%s",' "$(json_string "$mid")"
+	printf '"capacity":"%s",' "$(json_string "$capacity")"
+	printf '"used":"%s",' "$(json_string "$used")"
+	printf '"usable":"%s",' "$(json_string "$usable")"
+	printf '"ext_csd_rev":"%s",' "$(json_string "$ext_csd_rev")"
+	printf '"mmc_version":"%s",' "$(json_string "$mmc_version")"
+	printf '"life_a_raw":"%s",' "$(json_string "$life_a_raw")"
+	printf '"life_a_range":"%s",' "$(json_string "$(life_range "$life_a_raw")")"
+	printf '"life_a_percent":%s,' "$(life_percent "$life_a_raw")"
+	printf '"life_b_raw":"%s",' "$(json_string "$life_b_raw")"
+	printf '"life_b_range":"%s",' "$(json_string "$(life_range "$life_b_raw")")"
+	printf '"life_b_percent":%s,' "$(life_percent "$life_b_raw")"
+	printf '"pre_eol_raw":"%s",' "$(json_string "$pre_eol_raw")"
+	printf '"pre_eol_status":"%s",' "$(json_string "$pre_status")"
+	printf '"health_level":"%s",' "$(json_string "$health_level")"
+	printf '"suggestion":"%s",' "$(json_string "$suggestion")"
+	printf '"raw_output":"%s"' "$(json_string "$raw_output")"
+	printf '}\n'
+	exit 0
+}
+
+life_range() {
+	case "$1" in
+		0x01|0X01) printf '0%%-10%%' ;;
+		0x02|0X02) printf '10%%-20%%' ;;
+		0x03|0X03) printf '20%%-30%%' ;;
+		0x04|0X04) printf '30%%-40%%' ;;
+		0x05|0X05) printf '40%%-50%%' ;;
+		0x06|0X06) printf '50%%-60%%' ;;
+		0x07|0X07) printf '60%%-70%%' ;;
+		0x08|0X08) printf '70%%-80%%' ;;
+		0x09|0X09) printf '80%%-90%%' ;;
+		0x0a|0X0A|0x0A|0X0a) printf '90%%-100%%' ;;
+		0x0b|0X0B|0x0B|0X0b) printf '超过设计寿命' ;;
+		*) printf '未知' ;;
+	esac
+}
+
+life_percent() {
+	case "$1" in
+		0x01|0X01) printf '5' ;;
+		0x02|0X02) printf '15' ;;
+		0x03|0X03) printf '25' ;;
+		0x04|0X04) printf '35' ;;
+		0x05|0X05) printf '45' ;;
+		0x06|0X06) printf '55' ;;
+		0x07|0X07) printf '65' ;;
+		0x08|0X08) printf '75' ;;
+		0x09|0X09) printf '85' ;;
+		0x0a|0X0A|0x0A|0X0a) printf '95' ;;
+		0x0b|0X0B|0x0B|0X0b) printf '100' ;;
+		*) printf '0' ;;
+	esac
+}
+
+life_score() {
+	case "$1" in
+		0x01|0X01) printf '1' ;;
+		0x02|0X02) printf '2' ;;
+		0x03|0X03) printf '3' ;;
+		0x04|0X04) printf '4' ;;
+		0x05|0X05) printf '5' ;;
+		0x06|0X06) printf '6' ;;
+		0x07|0X07) printf '7' ;;
+		0x08|0X08) printf '8' ;;
+		0x09|0X09) printf '9' ;;
+		0x0a|0X0A|0x0A|0X0a) printf '10' ;;
+		0x0b|0X0B|0x0B|0X0b) printf '11' ;;
+		*) printf '0' ;;
+	esac
+}
+
+pre_eol_status() {
+	case "$1" in
+		0x01|0X01) printf '正常' ;;
+		0x02|0X02) printf '警告' ;;
+		0x03|0X03) printf '危险' ;;
+		*) printf '未知' ;;
+	esac
+}
+
+manufacturer_name() {
+	case "$1" in
+		0x000001|0x01|01) printf 'Panasonic' ;;
+		0x000002|0x02|02|0x000005|0x05|05|0x000070|0x70|70|0x00009f|0x9f|0x9F|9F|9f) printf 'Kingston' ;;
+		0x000003|0x03|03|0x000011|0x11|11) printf 'Toshiba/Kioxia' ;;
+		0x000004|0x04|04|0x000045|0x45|45) printf 'SanDisk/Western Digital' ;;
+		0x000008|0x08|08) printf 'Fujitsu' ;;
+		0x000009|0x09|09|0x000044|0x44|44) printf 'ATP' ;;
+		0x00000c|0x0c|0x0C|0C|0c) printf 'Macronix' ;;
+		0x00000d|0x0d|0x0D|0D|0d) printf 'Winbond' ;;
+		0x00000e|0x0e|0x0E|0E|0e) printf 'Phison' ;;
+		0x00000f|0x0f|0x0F|0F|0f) printf 'SMI/Silicon Motion' ;;
+		0x000010|0x10|10) printf 'NEC/Renesas' ;;
+		0x000012|0x12|12) printf 'GigaStone' ;;
+		0x000013|0x13|13|0x00002c|0x2c|0x2C|2C|2c) printf 'Micron' ;;
+		0x000015|0x15|15) printf 'Samsung' ;;
+		0x00001d|0x1d|0x1D|1D|1d|0x000098|0x98|98) printf 'Toshiba' ;;
+		0x000027|0x27|27) printf 'Apacer' ;;
+		0x00002d|0x2d|0x2D|2D|2d|0x0000f4|0xf4|0x0F4|F4|f4) printf 'BIWIN' ;;
+		0x00002e|0x2e|0x2E|2E|2e) printf 'GigaDevice' ;;
+		0x00002f|0x2f|0x2F|2F|2f) printf 'MMY/Macronix Micro' ;;
+		0x000030|0x30|30) printf 'Raysun' ;;
+		0x000031|0x31|31) printf 'Comay' ;;
+		0x000037|0x37|37) printf 'KingMax' ;;
+		0x000044|0x44|44) printf 'ATP' ;;
+		0x000045|0x45|45) printf 'SanDisk/Western Digital' ;;
+		0x00005d|0x5d|0x5D|5D|5d) printf 'Swissbit' ;;
+		0x000088|0x88|88|0x0000d6|0xd6|0x0D6|D6|d6) printf 'FORESEE/Longsys' ;;
+		0x000090|0x90|90) printf 'SK Hynix' ;;
+		0x00009b|0x9b|0x9B|9B|9b) printf 'YMTC' ;;
+		0x0000fe|0xfe|0x0FE|0x0Fe|0x0fE|0x0fe|FE|Fe|fE|fe) printf 'Micron/Numonyx' ;;
+		*) printf '未知' ;;
+	esac
+}
+ext_csd_rev_label() {
+	case "$1" in
+		0x00|0X00|00) printf '1.0' ;;
+		0x01|0X01|01) printf '1.1' ;;
+		0x02|0X02|02) printf '1.2' ;;
+		0x03|0X03|03) printf '1.3' ;;
+		0x04|0X04|04) printf '1.4' ;;
+		0x05|0X05|05) printf '1.5' ;;
+		0x06|0X06|06) printf '1.6' ;;
+		0x07|0X07|07) printf '1.7' ;;
+		0x08|0X08|08) printf '1.8' ;;
+		*) printf '未知' ;;
+	esac
+}
+
+mmc_version_from_ext_csd_rev() {
+	case "$1" in
+		0x00|0X00|00) printf 'MMC 4.0' ;;
+		0x01|0X01|01) printf 'MMC 4.1' ;;
+		0x02|0X02|02) printf 'MMC 4.2' ;;
+		0x03|0X03|03) printf 'MMC 4.3' ;;
+		0x04|0X04|04) printf 'MMC 4.4' ;;
+		0x05|0X05|05) printf 'MMC 4.41' ;;
+		0x06|0X06|06) printf 'MMC 4.5' ;;
+		0x07|0X07|07) printf 'MMC 5.0' ;;
+		0x08|0X08|08) printf 'MMC 5.1' ;;
+		*) printf '未知' ;;
+	esac
+}
+
+read_debugfs_extcsd() {
+	local sys_name="$1"
+	local card_id=""
+	local extcsd_path=""
+	local hex=""
+	local rev_hex=""
+
+	card_id="$(basename "$(readlink -f "/sys/class/block/$sys_name/device" 2>/dev/null)")"
+	if [ -n "$card_id" ]; then
+		for extcsd_path in /sys/kernel/debug/mmc*/"$card_id"/ext_csd; do
+			[ -r "$extcsd_path" ] || continue
+			break
+		done
+	fi
+
+	if [ ! -r "$extcsd_path" ]; then
+		for extcsd_path in /sys/kernel/debug/mmc*/*/ext_csd; do
+			[ -r "$extcsd_path" ] || continue
+			break
+		done
+	fi
+
+	[ -r "$extcsd_path" ] || return 1
+
+	hex="$(tr -d ' \t\r\n' < "$extcsd_path" 2>/dev/null)"
+	[ -n "$hex" ] || return 1
+	[ "${#hex}" -ge 386 ] || return 1
+
+	rev_hex="$(printf '%s' "$hex" | cut -c385-386)"
+	debugfs_extcsd_rev="$(ext_csd_rev_label "$rev_hex")"
+	debugfs_mmc_version="$(mmc_version_from_ext_csd_rev "$rev_hex")"
+	debugfs_extcsd_path="$extcsd_path"
+
+	[ "$debugfs_extcsd_rev" != "未知" ] || return 1
+	[ "$debugfs_mmc_version" != "未知" ] || return 1
+	return 0
+}
+
+read_mmc_version_info() {
+	local raw_output="$1"
+	local parsed=""
+
+	parsed="$(printf '%s\n' "$raw_output" | sed -n 's/^.*Extended CSD rev[[:space:]]\{1,\}\([^ ]*\)[[:space:]]*(\([^)]*\)).*$/\1|\2/p' | head -n1)"
+	if [ -n "$parsed" ]; then
+		ext_csd_rev="${parsed%%|*}"
+		mmc_version="${parsed#*|}"
+	fi
+
+	[ -n "$ext_csd_rev" ] || ext_csd_rev="未知"
+	[ -n "$mmc_version" ] || mmc_version="未知"
+}
+
+format_gb() {
+	awk -v bytes="$1" 'BEGIN {
+		if (bytes <= 0) {
+			print "未知";
+			exit;
+		}
+		printf "%.2f GB", bytes / 1073741824;
+	}'
+}
+
+format_capacity_gb() {
+	awk -v bytes="$1" 'BEGIN {
+		n = split("1 2 4 8 16 32 64 128 256 512 1024 2048", tiers, " ");
+		if (bytes <= 0) {
+			print "未知";
+			exit;
+		}
+
+		gb = bytes / 1000000000;
+		best = gb;
+		best_diff = -1;
+
+		for (i = 1; i <= n; i++) {
+			diff = gb - tiers[i];
+			if (diff < 0)
+				diff = -diff;
+			if (best_diff < 0 || diff < best_diff) {
+				best = tiers[i];
+				best_diff = diff;
+			}
+		}
+
+		printf "%.0f GB", best;
+	}'
+}
+
+read_device_info() {
+	local device="$1"
+	local sys_name="${device##*/}"
+	local sys_block="/sys/class/block/$sys_name"
+	local sys_dev="$sys_block/device"
+	local sectors=""
+	local bytes=""
+	local used_kb="0"
+	local total_kb="0"
+	local mount_source=""
+	local mountpoint=""
+	local kb=""
+	local total_field=""
+	local allowed_ids="," 
+	local allowed_parts="," 
+	local loop_names="," 
+	local dev_path=""
+	local dev_id=""
+	local backing_file=""
+	local loop_path=""
+	local source_path=""
+	local source_name=""
+	local source_id=""
+
+	mid="未知"
+	manufacturer="未知"
+	model="未知"
+	capacity="未知"
+	used="未知"
+	usable="未知"
+
+	if [ -r "$sys_dev/manfid" ]; then
+		mid="$(cat "$sys_dev/manfid" 2>/dev/null | awk '{ print $1 }')"
+		manufacturer="$(manufacturer_name "$mid")"
+	fi
+
+	if [ -r "$sys_dev/name" ]; then
+		model="$(cat "$sys_dev/name" 2>/dev/null | awk '{ print $1 }')"
+	fi
+
+	if [ -r "$sys_block/size" ]; then
+		sectors="$(cat "$sys_block/size" 2>/dev/null | awk '{ print $1 }')"
+		bytes="$(awk -v sectors="$sectors" 'BEGIN { printf "%.0f", sectors * 512 }')"
+		capacity="$(format_capacity_gb "$bytes")"
+		usable="$(format_gb "$bytes")"
+	fi
+
+	for dev_path in "$sys_block" /sys/class/block/"$sys_name"p*; do
+		[ -r "$dev_path/dev" ] || continue
+		dev_id="$(cat "$dev_path/dev" 2>/dev/null | awk '{ print $1 }')"
+		[ -n "$dev_id" ] || continue
+		case "$allowed_ids" in
+			*,"$dev_id",*) ;;
+			*) allowed_ids="${allowed_ids}${dev_id}," ;;
+		esac
+		case "${dev_path##*/}" in
+			"$sys_name") ;;
+			*)
+				case "$allowed_parts" in
+					*,"${dev_path##*/}",*) ;;
+					*) allowed_parts="${allowed_parts}${dev_path##*/}," ;;
+				esac
+			;;
+		esac
+	done
+
+	for loop_path in /sys/class/block/loop*; do
+		[ -r "$loop_path/loop/backing_file" ] || continue
+		backing_file="$(cat "$loop_path/loop/backing_file" 2>/dev/null)"
+		[ -n "$backing_file" ] || continue
+
+		case "$backing_file" in
+			/*) ;;
+			*) backing_file="/$backing_file" ;;
+		esac
+
+		source_path="$(df -kP "$backing_file" 2>/dev/null | awk 'NR == 2 { print $1 }')"
+		source_name=""
+		source_id=""
+		case "$source_path" in
+			/dev/*)
+				source_name="${source_path##*/}"
+				if [ -r "/sys/class/block/$source_name/dev" ]; then
+					source_id="$(cat "/sys/class/block/$source_name/dev" 2>/dev/null | awk '{ print $1 }')"
+				fi
+			;;
+		esac
+
+		case "$allowed_ids" in
+			*,"$source_id",*)
+				case "$loop_names" in
+					*,"${loop_path##*/}",*) ;;
+					*) loop_names="${loop_names}${loop_path##*/}," ;;
+				esac
+			;;
+		esac
+	done
+
+	while read -r mount_source mountpoint _; do
+		[ -n "$mount_source" ] || continue
+		[ -n "$mountpoint" ] || continue
+
+		total_field="$(df -kP "$mountpoint" 2>/dev/null | awk 'NR == 2 { print $2 }')"
+		kb="$(df -kP "$mountpoint" 2>/dev/null | awk 'NR == 2 { print $3 }')"
+
+		case "$mount_source" in
+			/dev/mmcblk*)
+				case "$allowed_parts" in
+					*,"${mount_source##*/}",*) ;;
+					*) continue ;;
+				esac
+			;;
+			/dev/loop*)
+				case "$loop_names" in
+					*,"${mount_source##*/}",*) ;;
+					*) continue ;;
+				esac
+			;;
+			/dev/root)
+				case "$mountpoint" in
+					/rom) ;;
+					*) continue ;;
+				esac
+			;;
+			*) continue ;;
+		esac
+
+		case "$total_field" in
+			''|*[!0-9]*) ;;
+			*) total_kb=$((total_kb + total_field)) ;;
+		esac
+		case "$kb" in
+			''|*[!0-9]*) ;;
+			*) used_kb=$((used_kb + kb)) ;;
+		esac
+	done <<EOF
+$(awk -v parts="$allowed_parts" -v loops="$loop_names" '
+function allow_src(src, name) {
+	if (src == "/dev/root")
+		return 1;
+	if (src ~ /^\/dev\/mmcblk/) {
+		name = src;
+		sub("^/dev/", "", name);
+		return index(parts, "," name ",") > 0;
+	}
+	if (src ~ /^\/dev\/loop/) {
+		name = src;
+		sub("^/dev/", "", name);
+		return index(loops, "," name ",") > 0;
+	}
+	return 0;
+}
+{
+	src = $1;
+	mnt = $2;
+	if (!allow_src(src))
+		next;
+	if (src == "/dev/root" && mnt != "/rom")
+		next;
+	if (!(src in best) || length(mnt) < length(best[src]))
+		best[src] = mnt;
+}
+END {
+	for (src in best)
+		print src "\t" best[src];
+}' /proc/mounts)
+EOF
+
+	if [ "$used_kb" -gt 0 ]; then
+		used="$(format_gb "$((used_kb * 1024))")"
+	else
+		kb="$(df -k / 2>/dev/null | awk 'NR == 2 { print $3 }')"
+		case "$kb" in
+			''|*[!0-9]*) ;;
+			*) used="$(format_gb "$((kb * 1024))")" ;;
+		esac
+	fi
+
+	if [ "$usable" = "未知" ]; then
+		if [ "$total_kb" -gt 0 ]; then
+			usable="$(format_gb "$((total_kb * 1024))")"
+		else
+			usable="$capacity"
+		fi
+	fi
+}
+MMC_BIN=""
+for candidate in /usr/sbin/mmc /usr/bin/mmc /sbin/mmc /bin/mmc; do
+	if [ -x "$candidate" ]; then
+		MMC_BIN="$candidate"
+		break
+	fi
+done
+
+if [ -z "$MMC_BIN" ] && command -v mmc >/dev/null 2>&1; then
+	MMC_BIN="$(command -v mmc)"
+fi
+
+device=""
+for candidate in /dev/mmcblk[0-9]*; do
+	[ -e "$candidate" ] || continue
+	case "$candidate" in
+		/dev/mmcblk*[!0-9]|*p[0-9]*|*boot[0-9]*|*rpmb*) continue ;;
+	esac
+	[ -b "$candidate" ] || continue
+	device="$candidate"
+	break
+done
+
+[ -n "$device" ] || error_json "no_device" "未检测到 eMMC 设备，当前设备可能使用 SATA/NVMe/USB 存储。"
+
+read_device_info "$device"
+
+if [ -z "$MMC_BIN" ]; then
+	sys_name="${device##*/}"
+	sys_dev="/sys/class/block/$sys_name/device"
+	debugfs_extcsd_rev=""
+	debugfs_mmc_version=""
+	debugfs_extcsd_path=""
+
+	if [ -r "$sys_dev/life_time" ] && [ -r "$sys_dev/pre_eol_info" ]; then
+		life_values="$(cat "$sys_dev/life_time" 2>/dev/null)"
+		life_a_raw="$(printf '%s\n' "$life_values" | awk '{ print $1 }')"
+		life_b_raw="$(printf '%s\n' "$life_values" | awk '{ print $2 }')"
+		pre_eol_raw="$(cat "$sys_dev/pre_eol_info" 2>/dev/null | awk '{ print $1 }')"
+		raw_output="mmc-utils 未安装，已使用内核 sysfs 备用数据源。\n$sys_dev/life_time: $life_values\n$sys_dev/pre_eol_info: $pre_eol_raw"
+		if read_debugfs_extcsd "$sys_name"; then
+			raw_output="$raw_output\n$debugfs_extcsd_path: 已解析 EXT_CSD rev $debugfs_extcsd_rev ($debugfs_mmc_version)"
+			output_json "$device" "$debugfs_extcsd_rev" "$debugfs_mmc_version" "$life_a_raw" "$life_b_raw" "$pre_eol_raw" "$raw_output" "$manufacturer" "$model" "$mid" "$capacity" "$used" "$usable"
+		fi
+		output_json "$device" "未知" "未知" "$life_a_raw" "$life_b_raw" "$pre_eol_raw" "$raw_output" "$manufacturer" "$model" "$mid" "$capacity" "$used" "$usable"
+	fi
+
+	error_json "missing_mmc_utils" "未检测到 mmc-utils，且当前内核未暴露 sysfs 寿命字段。请先安装：opkg update && opkg install mmc-utils"
+fi
+
+raw_output="$("$MMC_BIN" extcsd read "$device" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] || error_json "read_failed" "读取 $device 失败：$raw_output"
+
+ext_csd_rev=""
+mmc_version=""
+read_mmc_version_info "$raw_output"
+if { [ "$ext_csd_rev" = "未知" ] || [ "$mmc_version" = "未知" ]; } && read_debugfs_extcsd "${device##*/}"; then
+	[ "$ext_csd_rev" = "未知" ] && ext_csd_rev="$debugfs_extcsd_rev"
+	[ "$mmc_version" = "未知" ] && mmc_version="$debugfs_mmc_version"
+	raw_output="$raw_output\n$debugfs_extcsd_path: 已解析 EXT_CSD rev $debugfs_extcsd_rev ($debugfs_mmc_version)"
+fi
+
+life_a_raw="$(printf '%s\n' "$raw_output" | sed -n 's/^.*EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A.*: \(0x[0-9A-Fa-f][0-9A-Fa-f]\).*$/\1/p' | head -n1)"
+life_b_raw="$(printf '%s\n' "$raw_output" | sed -n 's/^.*EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B.*: \(0x[0-9A-Fa-f][0-9A-Fa-f]\).*$/\1/p' | head -n1)"
+pre_eol_raw="$(printf '%s\n' "$raw_output" | sed -n 's/^.*EXT_CSD_PRE_EOL_INFO.*: \(0x[0-9A-Fa-f][0-9A-Fa-f]\).*$/\1/p' | head -n1)"
+
+output_json "$device" "$ext_csd_rev" "$mmc_version" "$life_a_raw" "$life_b_raw" "$pre_eol_raw" "$raw_output" "$manufacturer" "$model" "$mid" "$capacity" "$used" "$usable"

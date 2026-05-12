@@ -1,0 +1,10 @@
+{
+	"luci-app-emmc-health": {
+		"description": "Grant access to eMMC health information",
+		"read": {
+			"file": {
+				"/usr/libexec/emmc-health": [ "exec" ]
+			}
+		}
+	}
+}
