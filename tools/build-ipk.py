@@ -8,7 +8,7 @@ import tarfile
 from pathlib import Path
 
 PKG_NAME = "luci-app-emmc-health"
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 ARCH = sys.argv[1] if len(sys.argv) > 1 else "all"
 WITHOUT_MMC_DEP = "--without-mmc-utils" in sys.argv[2:]
 RELEASE = "1"
@@ -168,9 +168,9 @@ def main():
 	with OUT.open("wb") as f:
 		with gzip.GzipFile(filename="", mode="wb", fileobj=f, mtime=0) as gz:
 			with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tar:
-				add_bytes(tar, "debian-binary", b"2.0\n", 0o644)
-				add_bytes(tar, "data.tar.gz", data_tar, 0o644)
-				add_bytes(tar, "control.tar.gz", control_tar, 0o644)
+				add_bytes(tar, "./debian-binary", b"2.0\n", 0o644)
+				add_bytes(tar, "./data.tar.gz", data_tar, 0o644)
+				add_bytes(tar, "./control.tar.gz", control_tar, 0o644)
 
 	print(OUT)
 
