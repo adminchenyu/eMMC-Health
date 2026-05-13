@@ -1,6 +1,6 @@
 {
 	"admin/services/emmc-health": {
-		"title": "eMMC 健康",
+		"title": "eMMC健康检测",
 		"order": 66,
 		"action": {
 			"type": "view",

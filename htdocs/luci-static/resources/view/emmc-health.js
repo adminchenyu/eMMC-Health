@@ -37,7 +37,7 @@ return view.extend({
 			E('style', {}, this.styles()),
 			E('div', { 'class': 'emmc-health-header' }, [
 				E('div', { 'class': 'emmc-health-title-wrap' }, [
-					E('h2', {}, _('eMMC 健康'))
+					E('h2', {}, _('eMMC健康检测'))
 				])
 			]),
 			content

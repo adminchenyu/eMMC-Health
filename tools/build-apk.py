@@ -7,7 +7,7 @@ import tarfile
 from pathlib import Path
 
 PKG_NAME = "luci-app-emmc-health"
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 RELEASE = "r1"
 ARCH = "noarch"
 

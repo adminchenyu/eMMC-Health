@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/LuCI-App-orange" alt="LuCI App">
   <img src="https://img.shields.io/badge/OpenWrt-supported-brightgreen" alt="OpenWrt">
   <img src="https://img.shields.io/badge/iStoreOS-supported-brightgreen" alt="iStoreOS">
-  <img src="https://img.shields.io/badge/version-1.1.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.3-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-GPL--3.0--only-red" alt="License">
 </p>
 
@@ -138,7 +138,7 @@ python tools/build-ipk.py all
 生成文件位于：
 
 ```text
-dist/luci-app-emmc-health_1.1.2-r1_all.ipk
+dist/luci-app-emmc-health_1.1.3-r1_all.ipk
 ```
 
 ---
@@ -270,7 +270,7 @@ opkg install mmc-utils
 当前版本：
 
 ```text
-1.1.2
+1.1.3
 ```
 
 ---

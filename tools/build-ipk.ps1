@@ -1,5 +1,5 @@
 param(
-	[string]$Version = "1.1.2",
+	[string]$Version = "1.1.3",
 	[string]$Release = "1",
 	[switch]$WithMmcUtilsDep
 )

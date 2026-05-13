@@ -8,7 +8,7 @@ import tarfile
 from pathlib import Path
 
 PKG_NAME = "luci-app-emmc-health"
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 ARCH = sys.argv[1] if len(sys.argv) > 1 else "all"
 WITHOUT_MMC_DEP = "--without-mmc-utils" in sys.argv[2:]
 RELEASE = "1"
