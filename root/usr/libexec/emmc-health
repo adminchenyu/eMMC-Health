@@ -518,16 +518,26 @@ if [ -z "$MMC_BIN" ] && command -v mmc >/dev/null 2>&1; then
 	MMC_BIN="$(command -v mmc)"
 fi
 
-device=""
-for candidate in /dev/mmcblk[0-9]*; do
-	[ -e "$candidate" ] || continue
-	case "$candidate" in
-		/dev/mmcblk*[!0-9]|*p[0-9]*|*boot[0-9]*|*rpmb*) continue ;;
-	esac
-	[ -b "$candidate" ] || continue
-	device="$candidate"
-	break
-done
+device="${EMMC_HEALTH_DEVICE:-}"
+if [ -n "$device" ]; then
+	# 允许显式指定设备（多块 mmcblk 或检测顺序不符合预期时使用）
+	[ -b "$device" ] || error_json "no_device" "指定的设备不存在或不是块设备：$device"
+else
+	for candidate in /dev/mmcblk[0-9]*; do
+		[ -e "$candidate" ] || continue
+		case "$candidate" in
+			/dev/mmcblk*[!0-9]|*p[0-9]*|*boot[0-9]*|*rpmb*) continue ;;
+		esac
+		[ -b "$candidate" ] || continue
+		# 只认 eMMC：/sys/class/block/<dev>/device/type 为 MMC；SD 卡为 SD，读不到 EXT_CSD
+		dev_type_file="/sys/class/block/${candidate##*/}/device/type"
+		if [ -r "$dev_type_file" ]; then
+			[ "$(cat "$dev_type_file" 2>/dev/null)" = "MMC" ] || continue
+		fi
+		device="$candidate"
+		break
+	done
+fi
 
 [ -n "$device" ] || error_json "no_device" "未检测到 eMMC 设备，当前设备可能使用 SATA/NVMe/USB 存储。"
 
@@ -553,7 +563,7 @@ if [ -z "$MMC_BIN" ]; then
 		output_json "$device" "未知" "未知" "$life_a_raw" "$life_b_raw" "$pre_eol_raw" "$raw_output" "$manufacturer" "$model" "$mid" "$capacity" "$used" "$usable"
 	fi
 
-	error_json "missing_mmc_utils" "未检测到 mmc-utils，且当前内核未暴露 sysfs 寿命字段。请先安装：opkg update && opkg install mmc-utils"
+	error_json "missing_mmc_utils" "未检测到 mmc-utils，且当前内核未暴露 sysfs 寿命字段。请先安装：apk add mmc-utils（apk 系，如 iStoreOS 25.12+）或 opkg update && opkg install mmc-utils（opkg 系）"
 fi
 
 raw_output="$("$MMC_BIN" extcsd read "$device" 2>&1)"

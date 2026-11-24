@@ -52,6 +52,8 @@
 
 - 自动检测整盘 eMMC 设备，例如 `/dev/mmcblk0`
 - 自动过滤分区和特殊区域，例如 `/dev/mmcblk0p1`、`/dev/mmcblk0boot0`、`/dev/mmcblk0rpmb`
+- 按 `/sys/class/block/<dev>/device/type` 只选 `MMC` 类型设备，插着 TF 卡时不会误判成 SD 卡
+- 支持 `EMMC_HEALTH_DEVICE=/dev/mmcblkX` 环境变量强制指定设备（多块 mmcblk 或检测顺序不符预期时）
 - 识别 eMMC 品牌、型号和 MID
 - 显示标称容量，例如 `128 GB`
 - 显示实际空间使用情况，并保留两位小数
@@ -153,12 +155,14 @@ opkg install luci-app-emmc-health_*.ipk
 /etc/init.d/uhttpd restart
 ```
 
-如果 `mmc-utils` 未自动安装，可以手动安装：
+如果 `mmc-utils` 未自动安装，可以手动安装（脚本会自动识别 apk / opkg）：
 
 ```sh
-opkg update
-opkg install mmc-utils
+apk add mmc-utils        # apk 系（iStoreOS 25.12+ / OpenWrt 25.x）
+opkg update && opkg install mmc-utils   # opkg 系（24.10 及更早）
 ```
+
+页面上的“安装 mmc-utils”按钮同样会按当前包管理器选择 `apk add` 或 `opkg install`。
 
 ---
 
